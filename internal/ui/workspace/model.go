@@ -82,6 +82,18 @@ func (m *Model) Select(idx int) {
 	}
 }
 
+// GoToTop selects the first workspace. No-op on an empty rail.
+func (m *Model) GoToTop() {
+	m.Select(0)
+}
+
+// GoToBottom selects the last workspace. No-op on an empty rail.
+func (m *Model) GoToBottom() {
+	if n := len(m.items); n > 0 {
+		m.Select(n - 1)
+	}
+}
+
 func (m *Model) SetItems(items []WorkspaceItem) {
 	m.items = items
 	if m.selected >= len(items) {

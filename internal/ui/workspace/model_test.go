@@ -138,3 +138,43 @@ func TestOtherUnreadCount_EmptyReaderResult(t *testing.T) {
 		t.Errorf("OtherUnreadCount with empty reader = %d want 0", got)
 	}
 }
+
+func TestGoToTop(t *testing.T) {
+	m := New([]WorkspaceItem{
+		{ID: "T1", Initials: "AC"},
+		{ID: "T2", Initials: "BE"},
+		{ID: "T3", Initials: "GA"},
+	}, 1) // start on the middle item
+	m.GoToTop()
+	if m.SelectedIndex() != 0 {
+		t.Errorf("GoToTop: SelectedIndex=%d want 0", m.SelectedIndex())
+	}
+	if m.SelectedID() != "T1" {
+		t.Errorf("GoToTop: SelectedID=%q want T1", m.SelectedID())
+	}
+}
+
+func TestGoToBottom(t *testing.T) {
+	m := New([]WorkspaceItem{
+		{ID: "T1", Initials: "AC"},
+		{ID: "T2", Initials: "BE"},
+		{ID: "T3", Initials: "GA"},
+	}, 0) // start on the first item
+	m.GoToBottom()
+	if m.SelectedIndex() != 2 {
+		t.Errorf("GoToBottom: SelectedIndex=%d want 2", m.SelectedIndex())
+	}
+	if m.SelectedID() != "T3" {
+		t.Errorf("GoToBottom: SelectedID=%q want T3", m.SelectedID())
+	}
+}
+
+// GoToTop/GoToBottom must be no-ops on an empty rail, not panics.
+func TestGoToTopBottom_EmptyRail(t *testing.T) {
+	m := New(nil, 0)
+	m.GoToTop()
+	m.GoToBottom()
+	if m.SelectedIndex() != 0 {
+		t.Errorf("empty rail: SelectedIndex=%d want 0", m.SelectedIndex())
+	}
+}

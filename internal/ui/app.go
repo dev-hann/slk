@@ -136,6 +136,12 @@ type App struct {
 	// any mode change disarms (see SetMode).
 	pendingWinCmd bool
 
+	// pendingG is true between the first and second 'g' of a vim-style
+	// "gg" jump-to-top. A non-'g' key or a mode change cancels it. The
+	// messages pane never arms it (channel chat / thread list are
+	// excluded from gg — see handleGoToTop).
+	pendingG bool
+
 	// layout owns the per-frame layout geometry (horizontal bands for
 	// mouse hit-testing + per-pane content heights for pageSize). See
 	// internal/ui/panellayout.go.
@@ -1264,6 +1270,8 @@ func (a *App) flushScrollCoalesce() tea.Cmd {
 
 func (a *App) handleGoToBottom() tea.Cmd {
 	switch a.focusedPanel {
+	case PanelWorkspace:
+		a.workspaceRail.GoToBottom()
 	case PanelSidebar:
 		a.sidebar.GoToBottom()
 	case PanelMessages:
@@ -1275,6 +1283,24 @@ func (a *App) handleGoToBottom() tea.Cmd {
 		a.messagepane.GoToBottom()
 	case PanelThread:
 		a.threadPanel.GoToBottom()
+	}
+	return nil
+}
+
+// handleGoToTop jumps the focused panel to its top. The messages pane
+// (channel chat and the subscribed-threads list) is intentionally
+// excluded: channel history is lazily backfilled so "top" is not a
+// fixed point, and the threads list's absolute-vs-visible-top is
+// ambiguous. Only the workspace rail, sidebar, and thread reply panel
+// participate in gg.
+func (a *App) handleGoToTop() tea.Cmd {
+	switch a.focusedPanel {
+	case PanelWorkspace:
+		a.workspaceRail.GoToTop()
+	case PanelSidebar:
+		a.sidebar.GoToTop()
+	case PanelThread:
+		a.threadPanel.GoToTop()
 	}
 	return nil
 }
@@ -1502,6 +1528,10 @@ func (a *App) SetMode(mode Mode) {
 	// other helpHint states aren't clobbered by unrelated mode changes.
 	if a.pendingWinCmd {
 		a.pendingWinCmd = false
+		a.statusbar.SetHelpHint(a.defaultHelpHint())
+	}
+	if a.pendingG {
+		a.pendingG = false
 		a.statusbar.SetHelpHint(a.defaultHelpHint())
 	}
 	if mode == ModeInsert {
