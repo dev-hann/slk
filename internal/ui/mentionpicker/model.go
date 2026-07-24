@@ -133,8 +133,8 @@ func (m *Model) filter() {
 		if q == "" {
 			return true
 		}
-		return strings.HasPrefix(text.Fold(u.DisplayName), q) ||
-			strings.HasPrefix(text.Fold(u.Username), q)
+		return strings.Contains(text.Fold(u.DisplayName), q) ||
+			strings.Contains(text.Fold(u.Username), q)
 	}
 
 	var specials, inCh, notInCh []User
