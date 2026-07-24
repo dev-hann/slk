@@ -120,6 +120,19 @@ func TestApply_CustomSelectionFromTheme(t *testing.T) {
 	}
 }
 
+func TestCurrentName_TracksAppliedTheme(t *testing.T) {
+	Apply("dracula", config.Theme{})
+	if got := CurrentName(); got != "dracula" {
+		t.Fatalf("CurrentName() = %q, want %q after Apply", got, "dracula")
+	}
+	Apply("nord", config.Theme{})
+	if got := CurrentName(); got != "nord" {
+		t.Fatalf("CurrentName() = %q, want %q after Apply", got, "nord")
+	}
+	// Restore to a stable default for downstream tests.
+	Apply("dark", config.Theme{})
+}
+
 func TestApply_ResetsSelectionColorsBetweenThemes(t *testing.T) {
 	// First apply seltest (registered above or re-register here for isolation).
 	RegisterCustomTheme("seltest2", ThemeColors{

@@ -1,6 +1,93 @@
 package themeswitcher
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gammons/slk/internal/config"
+	"github.com/gammons/slk/internal/ui/styles"
+)
+
+// stylesCfg is a zero-value override used so Apply tests don't mutate user
+// overrides; restored to "dark" at the end of the styles-touching tests.
+var stylesCfg config.Theme
+
+func TestSelectedName_FirstItemOnOpen(t *testing.T) {
+	styles.Apply("dark", stylesCfg)
+	m := New()
+	m.SetItems([]string{"Dark", "Light", "Dracula"})
+	m.Open()
+	if got := m.SelectedName(); got != "Dark" {
+		t.Fatalf("SelectedName() = %q, want Dark on fresh open", got)
+	}
+}
+
+func TestSelectedName_AfterNavigation(t *testing.T) {
+	m := New()
+	m.SetItems([]string{"Dark", "Light", "Dracula"})
+	m.Open()
+	m.HandleKey("down")
+	if got := m.SelectedName(); got != "Light" {
+		t.Fatalf("SelectedName() after down = %q, want Light", got)
+	}
+	m.HandleKey("down")
+	if got := m.SelectedName(); got != "Dracula" {
+		t.Fatalf("SelectedName() after 2x down = %q, want Dracula", got)
+	}
+	m.HandleKey("up")
+	if got := m.SelectedName(); got != "Light" {
+		t.Fatalf("SelectedName() after up = %q, want Light", got)
+	}
+}
+
+func TestSelectedName_AfterFilterShowsFirstMatch(t *testing.T) {
+	m := New()
+	m.SetItems([]string{"Dark", "Light", "Dracula", "Nord"})
+	m.Open()
+	m.HandleKey("d")
+	if got := m.SelectedName(); got != "Dark" {
+		t.Fatalf("SelectedName() after filter 'd' = %q, want Dark (prefix match first)", got)
+	}
+}
+
+func TestSelectedName_EmptyWhenNoMatches(t *testing.T) {
+	m := New()
+	m.SetItems([]string{"Dark", "Light"})
+	m.Open()
+	m.HandleKey("z")
+	if got := m.SelectedName(); got != "" {
+		t.Fatalf("SelectedName() with no matches = %q, want empty", got)
+	}
+}
+
+func TestSelectedName_EmptyWhenClosed(t *testing.T) {
+	m := New()
+	m.SetItems([]string{"Dark"})
+	if got := m.SelectedName(); got != "" {
+		t.Fatalf("SelectedName() before Open = %q, want empty", got)
+	}
+}
+
+func TestOriginalName_SnapshotsCurrentAtOpen(t *testing.T) {
+	styles.Apply("dracula", stylesCfg)
+	m := New()
+	m.SetItems([]string{"Dark", "Light", "Dracula"})
+	m.OpenWithScope(ScopeWorkspace, "")
+	if got := m.OriginalName(); got != "dracula" {
+		t.Fatalf("OriginalName() = %q, want dracula (snapshot of styles.CurrentName at open)", got)
+	}
+}
+
+func TestOriginalName_UnchangedByNavigation(t *testing.T) {
+	styles.Apply("dracula", stylesCfg)
+	m := New()
+	m.SetItems([]string{"Dark", "Light", "Dracula"})
+	m.OpenWithScope(ScopeWorkspace, "")
+	m.HandleKey("down")
+	m.HandleKey("down")
+	if got := m.OriginalName(); got != "dracula" {
+		t.Fatalf("OriginalName() after navigation = %q, want dracula (must stay frozen)", got)
+	}
+}
 
 func TestOpenClose(t *testing.T) {
 	m := New()

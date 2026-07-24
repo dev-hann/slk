@@ -35,6 +35,12 @@ type Model struct {
 	visible    bool
 	scope      ThemeScope
 	headerText string
+	// originalName is a snapshot of styles.CurrentName() captured at
+	// OpenWithScope time. The mode handler uses it to revert a live preview
+	// back to the user's pre-picker theme when the picker is dismissed
+	// without a commit (Escape). Frozen for the lifetime of an open session;
+	// refreshed on each OpenWithScope.
+	originalName string
 }
 
 // New creates a new theme switcher.
@@ -62,7 +68,25 @@ func (m *Model) OpenWithScope(scope ThemeScope, headerText string) {
 	m.selected = 0
 	m.scope = scope
 	m.headerText = headerText
+	// Snapshot the currently-applied theme so a dismissed picker can revert
+	// any live-preview Apply() calls back to what the user had before.
+	m.originalName = styles.CurrentName()
 	m.filter()
+}
+
+// OriginalName returns the theme name that was active when the picker was
+// last opened (captured from styles.CurrentName()). Used by the mode handler
+// to restore the pre-picker theme on Escape.
+func (m Model) OriginalName() string { return m.originalName }
+
+// SelectedName returns the display name of the currently-highlighted theme,
+// or "" when the picker is closed or the filtered list is empty. The mode
+// handler polls this after every HandleKey to drive live preview.
+func (m Model) SelectedName() string {
+	if !m.visible || len(m.filtered) == 0 {
+		return ""
+	}
+	return m.items[m.filtered[m.selected]]
 }
 
 // Scope returns the scope the picker was last opened with.
