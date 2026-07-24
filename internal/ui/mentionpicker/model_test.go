@@ -267,6 +267,57 @@ func TestViewNotInChannelSuffix(t *testing.T) {
 	}
 }
 
+func TestFilterBySubstring(t *testing.T) {
+	m := New()
+	m.SetUsers([]User{
+		{ID: "U1", DisplayName: "윤여환", Username: "yeohwan.yoon"},
+		{ID: "U2", DisplayName: "김환수", Username: "hansoo.kim"},
+		{ID: "U3", DisplayName: "Alice Smith", Username: "asmith"},
+		{ID: "U4", DisplayName: "Bob Jones", Username: "bjones"},
+		{ID: "U5", DisplayName: "François", Username: "francois.b"},
+	})
+	cases := []struct {
+		query   string
+		wantIDs []string
+	}{
+		// Korean: substring of any position matches (prefix AND non-prefix).
+		{"여환", []string{"U1"}}, // given name — prefix=false under old code
+		{"환", []string{"U1", "U2"}}, // single trailing syllable matches both
+		{"윤", []string{"U1"}}, // surname
+		// English non-prefix substring.
+		{"ones", []string{"U4"}}, // inside Jones
+		{"mith", []string{"U3"}}, // inside Smith
+		// Username substring.
+		{"ohwa", []string{"U1"}}, // inside yeohwan.yoon
+		// Accent-insensitive substring.
+		{"cois", []string{"U5"}}, // inside François
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.query, func(t *testing.T) {
+			m.Open()
+			m.SetQuery(tc.query)
+			got := m.Filtered()
+			for _, want := range tc.wantIDs {
+				found := false
+				for _, u := range got {
+					if u.ID == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					ids := make([]string, 0, len(got))
+					for _, u := range got {
+						ids = append(ids, u.ID)
+					}
+					t.Errorf("query %q: expected ID %s in results, got %v", tc.query, want, ids)
+				}
+			}
+		})
+	}
+}
+
 func TestFilterAccentInsensitive(t *testing.T) {
 	m := New()
 	m.SetUsers([]User{
