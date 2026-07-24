@@ -1869,6 +1869,11 @@ func connectWorkspace(ctx context.Context, token slackclient.Token, db *cache.DB
 		if err := store.Bootstrap(ctx, client); err != nil {
 			log.Printf("section store bootstrap for %s failed: %v (falling back to config sections)", token.TeamName, err)
 		} else {
+			// Bootstrap repopulates the stars section from stars.list
+			// itself (channelSections.list returns built-in section
+			// types with empty channel_ids), so the Starred header is
+			// live at first render and survives reconnect-triggered
+			// re-bootstraps without caller help.
 			wctx.SectionStore = store
 			// One-time info log when the user has both Slack sections
 			// active AND a non-empty [sections.*] config — the latter
@@ -1982,17 +1987,27 @@ func connectWorkspace(ctx context.Context, token slackclient.Token, db *cache.DB
 		debuglog.Cache("workspace_unread_bootstrap: team=%s GetUnreadCounts failed: %v", token.TeamName, ucErr)
 	}
 	wctx.ThreadsHasUnreads = threadsAgg.HasUnreads
-	if ucErr == nil && len(unreadCounts) > 0 {
+	// Boot applies an authoritative FULL snapshot: reset every channel
+	// in the workspace to read, then set the ones client.counts reports
+	// unread. This runs BEFORE the WebSocket goes live (ConnMgr.Run is
+	// started by the caller after connectWorkspace returns), so the
+	// reset cannot race an inbound *_marked event.
+	//
+	// Guard on ucErr only (not len>0): a successful call returning zero
+	// unreads legitimately means "everything is read" and must clear
+	// stale dots carried over from a prior session. A FAILED call must
+	// NOT reset — that would wipe every dot with no data to restore.
+	if ucErr == nil {
 		updates := make([]cache.ChannelReadStateUpdate, 0, len(unreadCounts))
 		for _, u := range unreadCounts {
 			updates = append(updates, cache.ChannelReadStateUpdate{
 				ChannelID:  u.ChannelID,
-				LastReadTS: u.LastRead, // may be ""; BatchUpdate preserves existing in that case
+				LastReadTS: u.LastRead, // may be ""; ReplaceWorkspaceReadState preserves existing in that case
 				HasUnread:  u.HasUnread,
 			})
 		}
-		if err := db.BatchUpdateChannelReadState(updates); err != nil {
-			log.Printf("Warning: bootstrap BatchUpdateChannelReadState for team=%s: %v", token.TeamName, err)
+		if err := db.ReplaceWorkspaceReadState(client.TeamID(), updates); err != nil {
+			log.Printf("Warning: bootstrap ReplaceWorkspaceReadState for team=%s: %v", token.TeamName, err)
 		}
 	}
 	mutedItemCount := 0
@@ -3096,17 +3111,22 @@ func xdgCache() string {
 
 // bootstrapPresenceAndDND fetches the user's current presence and DND
 // state from Slack, populates the WorkspaceContext, and sends an initial
-// StatusChangeMsg. Also subscribes to presence_change events for the
-// self user so external state changes arrive over the WS.
+// StatusChangeMsg. Also subscribes to presence_change events for the self
+// user and every DM peer so external state changes arrive over the WS.
 func bootstrapPresenceAndDND(ctx context.Context, wctx *WorkspaceContext, program *tea.Program) {
 	if wctx == nil || wctx.Client == nil {
 		return
 	}
 
-	// Subscribe so future presence_change events for our own user arrive.
-	// Failure is non-fatal — manual_presence_change and dnd_updated work
-	// without an explicit subscription.
-	_ = wctx.Client.SubscribePresence([]string{wctx.UserID})
+	// Subscribe to presence for our own user plus every 1:1 DM peer so the
+	// sidebar can show who is online. presence_sub REPLACES the prior
+	// subscription set, so self and peers must go in one call. Failure is
+	// non-fatal — manual_presence_change and dnd_updated work without it.
+	//
+	// This runs from OnConnect, which fires on the initial connect AND on
+	// every reconnect. Re-subscribing per connection is required because
+	// the subscription is connection-scoped.
+	subscribeWorkspacePresence(wctx)
 
 	// Initial presence fetch
 	if p, err := wctx.Client.GetUserPresence(ctx, wctx.UserID); err == nil && p != nil {
@@ -3149,6 +3169,58 @@ func bootstrapPresenceAndDND(ctx context.Context, wctx *WorkspaceContext, progra
 			DNDEndTS:   wctx.DNDEndTS,
 		})
 	}
+}
+
+// subscribeWorkspacePresence subscribes over the WebSocket to presence
+// updates for the authenticated user plus every 1:1 DM peer, so the
+// sidebar can show who is online. Slack's presence_sub REPLACES the prior
+// subscription set and is connection-scoped, so this sends self + all DM
+// peers in a single call and must be re-run on each (re)connect.
+//
+// Note: the WS is opened with no_query_on_subscribe=1, so Slack does not
+// reply with each peer's current presence at subscribe time — DM rows are
+// seeded from the local cache at build time and then updated live by
+// presence_change events. Safe to call repeatedly.
+func subscribeWorkspacePresence(wctx *WorkspaceContext) {
+	if wctx == nil || wctx.Client == nil {
+		return
+	}
+	ids := workspacePresenceIDs(wctx)
+	if len(ids) == 0 {
+		debuglog.General("subscribeWorkspacePresence: no ids to subscribe")
+		return
+	}
+	if err := wctx.Client.SubscribePresence(ids); err != nil {
+		debuglog.General("subscribeWorkspacePresence (%d ids) FAILED: %v", len(ids), err)
+		return
+	}
+	debuglog.General("subscribeWorkspacePresence: sent presence_sub for %d ids (self+%d dm peers)", len(ids), len(ids)-1)
+}
+
+// workspacePresenceIDs returns the deduped list of user IDs to subscribe
+// for presence: the authenticated user plus every 1:1 DM peer. Group DMs
+// and app/bot DMs (which carry no human presence dot in the sidebar) are
+// skipped. Pure function for testability.
+func workspacePresenceIDs(wctx *WorkspaceContext) []string {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, len(wctx.Channels)+1)
+	add := func(uid string) {
+		if uid == "" {
+			return
+		}
+		if _, ok := seen[uid]; ok {
+			return
+		}
+		seen[uid] = struct{}{}
+		ids = append(ids, uid)
+	}
+	add(wctx.UserID) // self — keeps the self presence subscription intact
+	for _, ch := range wctx.Channels {
+		if ch.Type == "dm" {
+			add(ch.DMUserID)
+		}
+	}
+	return ids
 }
 
 // mostRecentlyVisitedChannel returns the channel ID with the latest

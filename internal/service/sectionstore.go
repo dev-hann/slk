@@ -14,6 +14,11 @@ import (
 // Defined as an interface so tests can pass fakes.
 type SectionsClient interface {
 	GetChannelSections(ctx context.Context) ([]slk.SidebarSection, error)
+	// GetStarredChannels backs the stars section membership.
+	// channelSections.list returns built-in section types (stars,
+	// recent_apps) with an empty channel_ids array; stars.list is the
+	// authoritative source Bootstrap uses to fill them.
+	GetStarredChannels(ctx context.Context) ([]string, error)
 }
 
 // SectionStore is the per-workspace authoritative cache of the user's
@@ -85,15 +90,72 @@ func (s *SectionStore) Bootstrap(ctx context.Context, client SectionsClient) err
 	s.ready = true
 	s.lastBootstrap = time.Now()
 	s.mu.Unlock()
+
+	// Slack's users.channelSections.list returns the stars section with
+	// an empty channel_ids array (it doesn't populate built-in section
+	// types). stars.list is the authoritative source for starred
+	// channels; fetch and inject here so EVERY Bootstrap — including
+	// reconnect-triggered re-bootstraps via MaybeRebootstrap — leaves
+	// the Starred header populated. Without this, a reconnect Bootstrap
+	// atomically replaced the store state and wiped the ChannelIDs that
+	// PopulateStars had filled, making includeInSidebar hide the header.
+	// Best-effort: on error the stars section stays empty and
+	// includeInSidebar hides it until the next bootstrap.
+	//
+	// PopulateStars re-locks internally; safe to call after unlock now
+	// that ready==true.
+	if stars, sErr := client.GetStarredChannels(ctx); sErr != nil {
+		log.Printf("section store: stars.list failed: %v (starred channels hidden until next bootstrap)", sErr)
+	} else if len(stars) > 0 {
+		s.PopulateStars(stars)
+	}
 	return nil
 }
 
-// SectionForChannel returns the section ID a channel belongs to. Returns
-// ok=false when the store isn't ready or the channel isn't in any section.
+// PopulateStars fills the stars section's ChannelIDs from stars.list,
+// the authoritative source for starred channels. Slack's
+// users.channelSections.list returns the stars section with an empty
+// channel_ids array (it doesn't populate built-in section types); without
+// this call the stars section stays empty and includeInSidebar hides it.
+//
+// Safe to call repeatedly — each call replaces the previous star list
+// and remaps the channelToSection index accordingly. No-op when the
+// workspace has no stars section (won't synthesize one).
+func (s *SectionStore) PopulateStars(channelIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return
+	}
+	var starsSectionID string
+	var stars *slk.SidebarSection
+	for id, sec := range s.sectionsByID {
+		if sec.Type == "stars" {
+			starsSectionID = id
+			stars = sec
+			break
+		}
+	}
+	if stars == nil {
+		return
+	}
+	// Drop the old stars→channel index entries.
+	for _, cid := range stars.ChannelIDs {
+		if existing, ok := s.channelToSection[cid]; ok && existing == starsSectionID {
+			delete(s.channelToSection, cid)
+		}
+	}
+	stars.ChannelIDs = append([]string(nil), channelIDs...)
+	stars.ChannelsCount = len(channelIDs)
+	for _, cid := range channelIDs {
+		s.channelToSection[cid] = starsSectionID
+	}
+}
+
 // SectionForChannel returns the renderable section ID a channel belongs
 // to. Returns ok=false when the store isn't ready, the channel isn't
-// indexed, OR the indexed section is not renderable in the v1 sidebar
-// (e.g. stars, slack_connect, salesforce_records, agents). Hiding
+// indexed, OR the indexed section is not renderable in the sidebar
+// (e.g. slack_connect, salesforce_records, agents). Hiding
 // non-renderable sections at this boundary prevents the sidebar from
 // trying to bucket items into headers it never created — see
 // includeInSidebar for the renderability rule.
@@ -109,17 +171,18 @@ func (s *SectionStore) SectionForChannel(channelID string) (string, bool) {
 	}
 	sec, secOK := s.sectionsByID[id]
 	if !secOK || !includeInSidebar(sec) {
-		// Section was deleted, or has a non-renderable type (stars /
-		// slack_connect / etc.). Treat the channel as unclaimed so it
-		// falls into the appropriate type-default bucket.
+		// Section was deleted, or has a non-renderable type
+		// (slack_connect / salesforce_records / agents / etc.). Treat
+		// the channel as unclaimed so it falls into the appropriate
+		// type-default bucket.
 		return "", false
 	}
 	return id, true
 }
 
 // OrderedSections walks the linked-list (head-first) and returns the
-// sections that should render in the sidebar, filtered to the v1
-// type whitelist. Cycle protection: stops if a section is revisited.
+// sections that should render in the sidebar, filtered to the
+// renderable type whitelist. Cycle protection: stops if a section is revisited.
 //
 // Head detection: a section is the head if no other section's Next
 // points at it. When multiple candidate heads exist (orphans), the
@@ -167,11 +230,14 @@ func (s *SectionStore) OrderedSections() []*slk.SidebarSection {
 	return out
 }
 
-// includeInSidebar applies the v1 filter rules. Renderable types:
+// includeInSidebar applies the render filter rules. Renderable types:
 // standard (always, even when empty — user intent), channels (default
-// catch-all), direct_messages (default DM bucket). recent_apps is only
-// rendered when non-empty (slk has its own Apps logic for the empty
-// case). Everything else is hidden in v1.
+// catch-all), direct_messages (default DM bucket), stars (Slack's
+// Starred feature — only when non-empty, mirroring recent_apps so users
+// without starred channels don't see an empty header). recent_apps is
+// only rendered when non-empty (slk has its own Apps logic for the
+// empty case). Everything else is hidden (slack_connect,
+// salesforce_records, agents, anything new).
 func includeInSidebar(sec *slk.SidebarSection) bool {
 	if sec.IsRedacted {
 		return false
@@ -179,10 +245,10 @@ func includeInSidebar(sec *slk.SidebarSection) bool {
 	switch sec.Type {
 	case "standard", "channels", "direct_messages":
 		return true
-	case "recent_apps":
+	case "stars", "recent_apps":
 		return len(sec.ChannelIDs) > 0
 	default:
-		// stars, slack_connect, salesforce_records, agents, anything new.
+		// slack_connect, salesforce_records, agents, anything new.
 		return false
 	}
 }
