@@ -43,6 +43,17 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		return a.handleWindowChord(msg)
 	}
 
+	// gg pending sub-state: the first 'g' armed it; the second 'g' jumps
+	// the focused panel to the top. Any other key cancels and is then
+	// handled normally below.
+	if a.pendingG {
+		a.pendingG = false
+		a.statusbar.SetHelpHint(a.defaultHelpHint())
+		if key.Matches(msg, a.keys.Top) {
+			return a.handleGoToTop()
+		}
+	}
+
 	// Reaction-nav sub-state (intercept before normal keys).
 	if a.focusedPanel == PanelMessages && a.messagepane.ReactionNavActive() {
 		return a.handleReactionNav(msg)
@@ -184,6 +195,14 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		if cmd := a.handleGoToBottom(); cmd != nil {
 			return cmd
 		}
+
+	case key.Matches(msg, a.keys.Top) && a.focusedPanel != PanelMessages:
+		// First 'g' of a vim-style "gg": arm the pending state and wait
+		// for the second. The messages pane is excluded (channel chat
+		// and the thread list don't participate in gg).
+		a.pendingG = true
+		a.statusbar.SetHelpHint("g  jump to top")
+		return nil
 
 	case key.Matches(msg, a.keys.PageUp):
 		if cmd := a.scrollFocusedPanel(-a.pageSize()); cmd != nil {
